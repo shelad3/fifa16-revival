@@ -81,7 +81,8 @@ class BlazeRedirector:
 
     def _redirect_target(self):
         host = self.config.get("auth_host", "127.0.0.1")
-        port = self.config.get("tcp_port", 42230)
+        # Try SSL port first since client is attempting TLS
+        port = self.config.get("ssl_port", 42133)
         return host, port
 
     def _build_blaze_response(self, request: bytes, peer) -> bytes:

@@ -1,4 +1,4 @@
-"""
+<#
 Launch FIFA 16 pointed at the local revival server.
 
 Uses the client's built-in override settings (no binary patching, no
@@ -96,7 +96,7 @@ FUT_TARGET_HOSTNAME=$ServerHost
 FUT_TARGET_PORT=$FutPort
 
 [POW]
-FIFA_POW_URL=http://$ServerHost:$PowPort
+FIFA_POW_URL=http://${ServerHost}:${PowPort}
 FORCE-NON-SECURE=1
 
 ; flat-key form (some Aardvark loaders read keys without sections)
@@ -104,7 +104,7 @@ ONLINE/BLAZEIP=$ServerHost
 ONLINE/BLAZEPORT=$BlazePort
 FUT_TARGET_HOSTNAME=$ServerHost
 FUT_TARGET_PORT=$FutPort
-FIFA_POW_URL=http://$ServerHost:$PowPort
+FIFA_POW_URL=http://${ServerHost}:${PowPort}
 ONLINE/FORCE-NON-SECURE=1
 "@
     Set-Content -Path $userIni -Value $ini -Encoding ASCII
@@ -117,6 +117,22 @@ if ($NoLaunch) {
 }
 
 Write-Host "Launching FIFA 16..." -ForegroundColor Green
-Start-Process -FilePath $exe -WorkingDirectory $GamePath
+
+# Overrides passed in the command line too (belt and braces: env vars +
+# user.ini + argv). Unrecognized switches are ignored by the Aardvark
+# settings parser, so extra forms are harmless.
+$gameArgs = @(
+    "-BLAZEIP", $ServerHost,
+    "-BLAZEPORT", "$BlazePort",
+    "-ONLINE/BLAZEIP", $ServerHost,
+    "-ONLINE/BLAZEPORT", "$BlazePort",
+    "-FUT_TARGET_HOSTNAME", $ServerHost,
+    "-FUT_TARGET_PORT", "$FutPort",
+    "-FIFA_POW_URL", "http://${ServerHost}:${PowPort}",
+    "-OSDK_EASW_REQ_URL", "http://${ServerHost}:${PowPort}"
+)
+
+Write-Host "Game args: $($gameArgs -join ' ')"
+Start-Process -FilePath $exe -WorkingDirectory $GamePath -ArgumentList $gameArgs
 Write-Host "Watch logs\network_journal.jsonl for incoming connections."
 Write-Host "Server must already be running:  python run_server.py"

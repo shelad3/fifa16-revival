@@ -12,6 +12,7 @@ This is the core of the server - if login works, FUT becomes reachable.
 import asyncio
 import logging
 import json
+import socket
 import time
 import uuid
 from typing import Dict, Optional
@@ -57,23 +58,40 @@ class BlazeAuthServer:
         self.db = db
         self.server = None
         self.tls_server = None
+        self.ssl_context = None
         self.sessions: Dict[int, Session] = {}
         self.session_counter = 1
 
     async def start(self):
+        ctx = None
+        if self.config.get("use_tls"):
+            ctx = await self._build_ssl_context()
+            if ctx is None:
+                return
+
+        # The client always starts with a TLS ClientHello on this port, so
+        # the plain TCP listener terminates TLS too.
         self.server = await asyncio.start_server(
             self._handle_client,
             self.config["host"],
-            self.config["tcp_port"]
+            self.config["tcp_port"],
+            ssl=ctx
         )
-        log.info("Auth server listening on %s:%s",
-                 self.config["host"], self.config["tcp_port"])
+        log.info("Auth server listening on %s:%s (tls=%s)",
+                 self.config["host"], self.config["tcp_port"], ctx is not None)
 
-        if self.config.get("use_tls"):
-            await self._start_tls_listener()
+        if ctx is not None:
+            self.tls_server = await asyncio.start_server(
+                self._handle_client,
+                self.config["host"],
+                self.config["ssl_port"],
+                ssl=ctx
+            )
+            log.info("Auth server (TLS) listening on %s:%s",
+                     self.config["host"], self.config["ssl_port"])
 
-    async def _start_tls_listener(self):
-        """Optional TLS listener (ssl_port) using a self-signed cert."""
+    async def _build_ssl_context(self):
+        """Build the TLS context from the self-signed cert (if present)."""
         import ssl
         from pathlib import Path
 
@@ -83,23 +101,25 @@ class BlazeAuthServer:
         if not (cert.is_file() and key.is_file()):
             log.warning("Auth: TLS requested but cert/key missing at %s / %s - "
                         "run tools/gen_cert.py first", cert, key)
-            return
+            return None
 
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        def _sni_callback(sslsocket, server_name, context):
+            log.info("Auth: TLS ClientHello SNI = %r (peer=%s)",
+                     server_name, sslsocket.getpeername())
+
+        ctx.sni_callback = _sni_callback
+
         try:
             ctx.load_cert_chain(str(cert), str(key))
         except Exception as e:
             log.error("Auth: failed to load TLS cert: %s", e)
-            return
-
-        self.tls_server = await asyncio.start_server(
-            self._handle_client,
-            self.config["host"],
-            self.config["ssl_port"],
-            ssl=ctx
-        )
-        log.info("Auth server (TLS) listening on %s:%s",
-                 self.config["host"], self.config["ssl_port"])
+            return None
+        log.info("Auth: TLS context loaded (cert=%s)", cert)
+        return ctx
 
     async def stop(self):
         if self.server:
@@ -109,15 +129,108 @@ class BlazeAuthServer:
             self.tls_server.close()
             await self.tls_server.wait_closed()
 
+    async def _handle_client_tls(self, reader, writer):
+        # SSL handshake is done by asyncio before we get here.
+        await self._handle_client_impl(reader, writer)
+
     async def _handle_client(self, reader, writer):
+        await self._handle_client_impl(reader, writer)
+
+    async def _maybe_upgrade_tls(self, reader, writer, peer):
+        """Peek the first byte; if it is a TLS handshake (0x16) upgrade the
+        connection to TLS using the local self-signed certificate."""
+        import ssl
+
+        sock = writer.get_extra_info("socket")
+        if sock is None:
+            return False
+
+        first = b""
+        for _ in range(60):
+            try:
+                first = sock.recv(1, socket.MSG_PEEK)
+                break
+            except (BlockingIOError, InterruptedError):
+                await asyncio.sleep(0.05)
+            except Exception as e:
+                log.debug("Auth: peek failed for %s: %s", peer, e)
+                return False
+
+        if not first:
+            return False
+
+        if first[0] != 0x16:
+            return False
+
+        ctx = self._ssl_context()
+        if ctx is None:
+            log.warning("Auth: client wants TLS but no cert available")
+            return False
+
+        log.info("Auth: TLS ClientHello from %s - upgrading", peer)
+        try:
+            await writer.start_tls(ctx)
+            return True
+        except Exception as e:
+            log.error("Auth: TLS upgrade failed for %s: %s", peer, e)
+            return False
+
+    def _ssl_context(self):
+        """Build (once) the server-side TLS context from the local cert."""
+        import ssl
+        from pathlib import Path
+
+        if self.ssl_context is not None:
+            return self.ssl_context
+
+        cert = Path(self.config.get("cert_file", ""))
+        key = Path(self.config.get("key_file", ""))
+        if not (cert.is_file() and key.is_file()):
+            return None
+
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        try:
+            ctx.load_cert_chain(str(cert), str(key))
+        except Exception as e:
+            log.error("Auth: failed to load TLS cert: %s", e)
+            return None
+
+        self.ssl_context = ctx
+        return ctx
+
+    async def _handle_client_impl(self, reader, writer):
+        # (real implementation starts below)
         peer = writer.get_extra_info("peername")
         log.info("Auth: new connection from %s:%s", peer[0], peer[1])
 
         current_session: Optional[Session] = None
 
         try:
+            # The client opens with a TLS ClientHello (0x16) on this port -
+            # upgrade the live connection instead of dropping it.
+            if await self._maybe_upgrade_tls(reader, writer, peer):
+                log.info("Auth: TLS established with %s", peer)
+
+            header = await asyncio.wait_for(reader.readexactly(8), timeout=30.0)
+
+            # Always journal the opening bytes - framing is being reverse
+            # engineered live.
+            self._journal_raw(peer, header)
+            log.info("Auth: first 8 bytes from %s: %s (hex=%s)",
+                     peer, header, header.hex())
+
+            # HTTP client (ProtoHttp) - journal the full request so we can
+            # reverse the expected response format.
+            if header[:3] in (b"GET", b"POS") or header[:4] in (b"HEAD", b"CONN"):
+                await self._handle_http(reader, writer, peer, header)
+                return
+
             while True:
-                header = await asyncio.wait_for(reader.readexactly(8), timeout=30.0)
+                if header is None:
+                    header = await asyncio.wait_for(
+                        reader.readexactly(8), timeout=30.0
+                    )
+                    self._journal_raw(peer, header)
 
                 packet_type = int.from_bytes(header[0:2], "big")
                 component = header[2]
@@ -133,6 +246,7 @@ class BlazeAuthServer:
                 if payload_len > 10_000_000:
                     log.warning("Auth: implausible payload_len=%d from %s - "
                                 "journaling and closing", payload_len, peer)
+                    self._journal_raw(peer, payload_len_bytes)
                     break
 
                 payload = b""
@@ -165,6 +279,8 @@ class BlazeAuthServer:
                 if getattr(response, "_close_after_send", False):
                     break
 
+                header = None
+
         except asyncio.IncompleteReadError:
             log.info("Auth: connection closed by %s", peer)
         except asyncio.TimeoutError:
@@ -183,6 +299,61 @@ class BlazeAuthServer:
                 await writer.wait_closed()
             except Exception:
                 pass
+
+    async def _handle_http(self, reader, writer, peer, first_bytes):
+        """Client spoke ProtoHttp instead of Blaze binary - journal the full
+        request and answer with a minimal XML doc so the client can parse it."""
+        import json as _json
+
+        buf = bytearray(first_bytes)
+        while b"\r\n\r\n" not in buf and len(buf) < 65536:
+            try:
+                chunk = await asyncio.wait_for(reader.read(4096), timeout=10.0)
+            except asyncio.TimeoutError:
+                break
+            if not chunk:
+                break
+            buf.extend(chunk)
+
+        raw = bytes(buf)
+        head, _, body = raw.partition(b"\r\n\r\n")
+        lines = head.decode("latin-1", errors="replace").split("\r\n")
+        request_line = lines[0] if lines else ""
+        headers = {}
+        for line in lines[1:]:
+            if ":" in line:
+                k, v = line.split(":", 1)
+                headers[k.strip()] = v.strip()
+
+        log.info("Auth HTTP from %s: %s  headers=%s body_len=%d",
+                 peer, request_line, headers, len(body))
+
+        journal_logger = logging.getLogger("journal.network")
+        journal_logger.debug(_json.dumps({
+            "timestamp": __import__("time").time(),
+            "source": "auth_http",
+            "peer": f"{peer[0]}:{peer[1]}",
+            "direction": "recv",
+            "request_line": request_line,
+            "headers": headers,
+            "body_hex": body.hex(),
+            "raw_hex": raw.hex(),
+            "ascii_preview": raw.decode("latin-1", errors="replace")[:2000]
+        }))
+
+        # Minimal parseable answer - format unknown, learn from next capture.
+        body_xml = '<?xml version="1.0" encoding="UTF-8"?><servers></servers>'
+        response = (
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/xml\r\n"
+            f"Content-Length: {len(body_xml)}\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            f"{body_xml}"
+        )
+        writer.write(response.encode("latin-1"))
+        await writer.drain()
+        log.info("Auth HTTP: sent empty server list to %s", peer)
 
     async def _dispatch_packet(self, packet: BlazePacket, peer, session):
         comp_name = (BlazeComponent(packet.component).name
@@ -474,3 +645,15 @@ class BlazeAuthServer:
             "payload_hex": packet.payload.hex()
         }
         journal_logger.debug(json.dumps(entry))
+
+    def _journal_raw(self, peer, data):
+        journal_logger = logging.getLogger("journal.network")
+        journal_logger.debug(json.dumps({
+            "timestamp": time.time(),
+            "source": "auth_raw",
+            "peer": f"{peer[0]}:{peer[1]}",
+            "direction": "recv",
+            "data_len": len(data),
+            "data_hex": data.hex(),
+            "ascii_preview": data.decode("latin-1", errors="replace")[:500]
+        }))

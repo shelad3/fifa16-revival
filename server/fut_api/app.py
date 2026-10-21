@@ -106,6 +106,10 @@ class FUTApiServer:
         self.app.router.add_get("/bank/user/account", self.handle_pow_bank)
         self.app.router.add_get("/news/user", self.handle_pow_news)
 
+        self.app.router.add_get(
+            "/fifa/fifalive/{tail:.*}", self.handle_fifalive
+        )
+
         # --- OSDK EASW upload collector (telemetry endpoint exists in client) ---
         self.app.router.add_post(
             "/xmshd_collector/v1/file/doupload.json",
@@ -631,6 +635,20 @@ class FUTApiServer:
 
     async def handle_pow_news(self, request):
         return self._make_response({"news": [], "banners": []})
+
+    # ------------------------------------------------------------------
+    # fifalive static config (hardcoded localhost:8000 in client)
+    # ------------------------------------------------------------------
+
+    async def handle_fifalive(self, request):
+        """GET /fifa/fifalive/... - static game config the client fetches
+        at boot (e.g. disabledregion.json). Real hosts: content servers.
+        Return empty/neutral values so nothing is region-blocked."""
+        tail = request.match_info.get("tail", "")
+        log.info("fifalive config: /fifa/fifalive/%s", tail)
+        if tail.endswith(".json"):
+            return self._make_response([])
+        return self._make_response({})
 
     # ------------------------------------------------------------------
     # OSDK EASW + catch-all
