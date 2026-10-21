@@ -115,10 +115,6 @@ The retail client can be redirected **without binary patching**:
 
 Full details: [`docs/CLIENT_FINDINGS.md`](docs/CLIENT_FINDINGS.md)
 
-## Website
-
-A project landing page lives at [`docs/index.html`](docs/index.html) — enable it via
-GitHub Pages (Settings → Pages → Deploy from branch → `main` / `docs`).
 
 ## License
 
