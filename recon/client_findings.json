@@ -1,0 +1,68 @@
+{
+  "urls": [
+    {
+      "file": "D:\\FIFA-16-SteamRIP.com\\FIFA 16\\CardsDLLzf.dll",
+      "offset": 1745728,
+      "match": "http://pg.fifa13.test.easportsworld.ea.com",
+      "context_hex": "2e636f6d3a383039392f00000000000000000000687474703a2f2f70672e6669666131332e746573742e656173706f727473"
+    },
+    {
+      "file": "D:\\FIFA-16-SteamRIP.com\\FIFA 16\\CardsDLLzf.dll",
+      "offset": 1745750,
+      "match": "easportsworld.ea.com",
+      "context_hex": "74703a2f2f70672e6669666131332e746573742e656173706f727473776f726c642e65612e636f6d3a383330362f66696661"
+    },
+    {
+      "file": "D:\\FIFA-16-SteamRIP.com\\FIFA 16\\Core\\Activation.dll",
+      "offset": 614464,
+      "match": "http://eahq-rca.ad.ea.com/CertEnroll/Root",
+      "context_hex": "4c446973747269627574696f6e506f696e748632687474703a2f2f656168712d7263612e61642e65612e636f6d2f43657274"
+    },
+    {
+      "file": "D:\\FIFA-16-SteamRIP.com\\FIFA 16\\Core\\Activation.dll",
+      "offset": 614721,
+      "match": "http://eahq-rca.ad.ea.com/CertEnroll/EAHQ-RCA.ad.ea.com_Root",
+      "context_hex": "686f72697479305106082b060105050730028645687474703a2f2f656168712d7263612e61642e65612e636f6d2f43657274"
+    },
+    {
+      "file": "D:\\FIFA-16-SteamRIP.com\\FIFA 16\\Core\\Activation.dll",
+      "offset": 614464,
+      "match": "http://eahq-rca.ad.ea.com",
+      "context_hex": "4c446973747269627574696f6e506f696e748632687474703a2f2f656168712d7263612e61642e65612e636f6d2f43657274"
+    },
+    {
+      "file": "D:\\FIFA-16-SteamRIP.com\\FIFA 16\\Core\\Activation.dll",
+      "offset": 614721,
+      "match": "http://eahq-rca.ad.ea.com/CertEnroll/EAHQ-RCA.ad.ea.com",
+      "context_hex": "686f72697479305106082b060105050730028645687474703a2f2f656168712d7263612e61642e65612e636f6d2f43657274"
+    },
+    {
+      "file": "D:\\FIFA-16-SteamRIP.com\\FIFA 16\\Core\\Activation.dll",
+      "offset": 614480,
+      "match": "ad.ea.com",
+      "context_hex": "6e748632687474703a2f2f656168712d7263612e61642e65612e636f6d2f43657274456e726f6c6c2f526f6f7425323043"
+    },
+    {
+      "file": "D:\\FIFA-16-SteamRIP.com\\FIFA 16\\dlc\\dlc_powdll\\dlc\\powdll\\powdllzf.dll",
+      "offset": 769639,
+      "match": "easfc.ea.com",
+      "context_hex": "545f4c4f5353000000000000007061732e67742e65617366632e65612e636f6d3a3830393400000000000000005452494747"
+    }
+  ],
+  "domains": [],
+  "ports": [],
+  "files_scanned": 60,
+  "config_files": [
+    "D:\\FIFA-16-SteamRIP.com\\FIFA 16\\buttonData.ini",
+    "D:\\FIFA-16-SteamRIP.com\\FIFA 16\\buttonDataKeyBoardMouse.ini",
+    "D:\\FIFA-16-SteamRIP.com\\FIFA 16\\buttonDataXenon.ini",
+    "D:\\FIFA-16-SteamRIP.com\\FIFA 16\\install.ini",
+    "D:\\FIFA-16-SteamRIP.com\\FIFA 16\\memoryfw.ini",
+    "D:\\FIFA-16-SteamRIP.com\\FIFA 16\\rune.ini",
+    "D:\\FIFA-16-SteamRIP.com\\FIFA 16\\fifasetup\\config.ini",
+    "D:\\FIFA-16-SteamRIP.com\\FIFA 16\\fifasetup\\fifasetup_default.ini",
+    "D:\\FIFA-16-SteamRIP.com\\FIFA 16\\fifasetup\\RequiredDriverInfo.xml",
+    "D:\\FIFA-16-SteamRIP.com\\FIFA 16\\fifasetup\\VideoCards.xml",
+    "D:\\FIFA-16-SteamRIP.com\\FIFA 16\\fifasetup\\VideoCardsLevelDetails.xml"
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "project": "FIFA 16 Revival Server",
+  "version": "0.1.0",
+  "mode": "development",
+
+  "blaze": {
+    "host": "127.0.0.1",
+    "redirector_port": 42127,
+    "ssl_port": 42133,
+    "tcp_port": 42230,
+    "use_tls": true,
+    "cert_file": "config/certs/server.crt",
+    "key_file": "config/certs/server.key",
+    "max_connections": 100
+  },
+
+  "fut_api": {
+    "host": "127.0.0.1",
+    "port": 42129,
+    "use_https": false
+  },
+
+  "udp_relay": {
+    "host": "0.0.0.0",
+    "port": 3659,
+    "max_sessions": 50,
+    "session_timeout_seconds": 120
+  },
+
+  "database": {
+    "type": "sqlite",
+    "path": "data/fifa16_revival.db",
+    "player_catalog_path": "data/players.csv"
+  },
+
+  "game": {
+    "fifa16_install_path": "D:\\FIFA-16-SteamRIP.com\\FIFA 16",
+    "redirect_domain": "www.ea.com",
+    "known_endpoints": {
+      "blaze_redirector": "winter15.gosredirector.ea.com",
+      "blaze_redirector_sdev": "winter15.gosredirector.sdev.ea.com",
+      "blaze_redirector_stest": "winter15.gosredirector.stest.ea.com",
+      "blaze_redirector_scert": "winter15.gosredirector.scert.ea.com",
+      "blaze_gateway": "gateway.ea.com",
+      "fut_content": "content.lt.easfc.ea.com:8080",
+      "fut_pas": "pas.gt.easfc.ea.com:8094",
+      "easw": "easw.easports.com:8099",
+      "fut_backend": "easportsworld.ea.com",
+      "accounts": "accounts.ea.com",
+      "signin": "signin.ea.com",
+      "telemetry": "fifa15.service.easports.com",
+      "peer_discovery": "http://localhost:8000/getPeerAddress"
+    },
+    "client_overrides": {
+      "settings_ini": "user.ini (game dir, highest priority Aardvark settings)",
+      "blaze": ["ONLINE/BLAZEIP", "ONLINE/BLAZEPORT", "ONLINE/BLAZEENV"],
+      "fut": ["FUT_TARGET_HOSTNAME", "FUT_TARGET_PORT", "FUT_RS4_APIURL_<region>"],
+      "pow": ["FIFA_POW_URL", "ONLINE/POW_CUSTOMURL", "ONLINE/FORCE-NON-SECURE"],
+      "osdk": ["OSDK_EASW_REQ_URL"]
+    }
+  },
+
+  "logging": {
+    "level": "DEBUG",
+    "log_dir": "logs",
+    "journal_network_traffic": true,
+    "journal_unknown_commands": true
+  },
+
+  "features": {
+    "enable_fut": true,
+    "enable_matchmaking": true,
+    "enable_transfer_market": true,
+    "enable_pack_opening": true,
+    "enable_online_matches": false,
+    "enable_career_mode": false
+  }
+}
