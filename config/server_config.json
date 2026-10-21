@@ -17,6 +17,7 @@
   "fut_api": {
     "host": "127.0.0.1",
     "port": 42129,
+    "secondary_port": 8000,
     "use_https": false
   },
 

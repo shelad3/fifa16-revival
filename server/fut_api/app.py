@@ -33,9 +33,39 @@ class FUTApiServer:
         self.app = web.Application()
         self.runner = None
         self.sessions: Dict[str, dict] = {}
+        self.app.middlewares.append(self._journal_middleware)
         self._setup_routes()
 
+    @web.middleware
+    async def _journal_middleware(self, request, handler):
+        """Journal EVERY HTTP request the game makes - the core RE tool."""
+        journal_logger = logging.getLogger("journal.http")
+        try:
+            entry = {
+                "timestamp": time.time(),
+                "source": "fut_api",
+                "method": request.method,
+                "path": request.path_qs,
+                "headers": {k: v for k, v in request.headers.items()},
+                "peer": request.remote,
+            }
+            journal_logger.debug(json.dumps(entry))
+        except Exception:
+            pass
+
+        try:
+            return await handler(request)
+        except web.HTTPException as e:
+            # Journal 404s loudly - they reveal unknown endpoints
+            if e.status == 404:
+                log.warning("HTTP 404: %s %s", request.method, request.path_qs)
+            raise
+        except Exception as e:
+            log.error("HTTP error on %s %s: %s", request.method, request.path_qs, e)
+            return web.Response(status=500, text="internal error")
+
     def _setup_routes(self):
+        # --- Legacy/scaffold FUT routes ---
         self.app.router.add_get("/fut/auth", self.handle_auth)
         self.app.router.add_get("/fut/claim", self.handle_claim)
         self.app.router.add_get("/fut/user/accountinfo", self.handle_account_info)
@@ -52,8 +82,41 @@ class FUTApiServer:
         self.app.router.add_post("/fut/transfer/bid", self.handle_place_bid)
         self.app.router.add_get("/fut/competition", self.handle_competition)
         self.app.router.add_get("/fut/challenge", self.handle_challenge)
+
+        # --- RS4-style FUT paths (from CardsDLLzf.dll, both /fut and bare) ---
+        for prefix in ("", "/fut", "/ut"):
+            self.app.router.add_post(f"{prefix}/auth", self.handle_ut_auth)
+            self.app.router.add_get(f"{prefix}/auth", self.handle_ut_auth)
+            self.app.router.add_get(f"{prefix}/security", self.handle_ut_security)
+            self.app.router.add_get(f"{prefix}/club", self.handle_club)
+            self.app.router.add_get(f"{prefix}/user", self.handle_ut_user)
+            self.app.router.add_get(f"{prefix}/keepalive", self.handle_ut_ok)
+            self.app.router.add_get(f"{prefix}/status", self.handle_ut_status)
+
+        # --- EASFC POW stubs (from powdllzf.dll) ---
+        self.app.router.add_get("/healthcheck/system/all", self.handle_pow_health)
+        self.app.router.add_get("/healthcheck/system/all/", self.handle_pow_health)
+        self.app.router.add_post("/auth", self.handle_pow_auth)
+        self.app.router.add_get("/auth", self.handle_pow_auth)
+        self.app.router.add_get("/security", self.handle_pow_security)
+        self.app.router.add_get("/trustInfo", self.handle_pow_ok)
+        self.app.router.add_get("/requestedPrivileges", self.handle_pow_ok)
+        self.app.router.add_get("/nucleus/entitlements", self.handle_pow_entitlements)
+        self.app.router.add_get("/user/friends", self.handle_pow_friends)
+        self.app.router.add_get("/bank/user/account", self.handle_pow_bank)
+        self.app.router.add_get("/news/user", self.handle_pow_news)
+
+        # --- OSDK EASW upload collector (telemetry endpoint exists in client) ---
+        self.app.router.add_post(
+            "/xmshd_collector/v1/file/doupload.json",
+            self.handle_easw_upload
+        )
+
         self.app.router.add_get("/", self.handle_root)
         self.app.router.add_get("/health", self.handle_health)
+
+        # Catch-all: journal anything else and answer empty JSON
+        self.app.router.add_route("*", "/{tail:.*}", self.handle_catchall)
 
     async def start(self):
         self.runner = web.AppRunner(self.app)
@@ -67,17 +130,33 @@ class FUTApiServer:
         log.info("FUT API listening on %s:%s",
                  self.config["host"], self.config["port"])
 
+        # Secondary site: the client has http://localhost:8000 hardcoded
+        secondary = self.config.get("secondary_port")
+        if secondary:
+            site2 = web.TCPSite(self.runner, self.config["host"], secondary)
+            await site2.start()
+            log.info("FUT API (secondary, localhost:8000 fallback) on %s:%s",
+                     self.config["host"], secondary)
+
     async def stop(self):
         if self.runner:
             await self.runner.cleanup()
 
     def _get_session(self, request) -> Optional[dict]:
-        session_token = request.headers.get("X-UT-SHARD-ID", "")
+        # Real client headers first (X-UT-SID from CardsDLLzf, X-POW-SID from powdllzf)
+        session_token = (
+            request.headers.get("X-UT-SID")
+            or request.headers.get("X-POW-SID")
+            or request.headers.get("X-UT-SHARD-ID")
+            or ""
+        )
         auth_header = request.headers.get("Authorization", "")
 
         if auth_header.startswith("Bearer "):
             session_token = auth_header[7:]
 
+        # Sessions are per-user persistent in this scaffold: any known token works;
+        # also accept "persona:<id>" shorthand so the client can authenticate easily.
         session = self.sessions.get(session_token)
         if session:
             session["last_seen"] = time.time()
@@ -414,3 +493,157 @@ class FUTApiServer:
             "challenges": [],
             "groups": []
         })
+
+    # ------------------------------------------------------------------
+    # RS4-style FUT handlers (paths per CardsDLLzf.dll strings)
+    # ------------------------------------------------------------------
+
+    async def handle_ut_auth(self, request):
+        """POST/GET /auth - RS4 session start (X-UT-SID issued here)."""
+        session_token = str(uuid.uuid4())
+        user_id = 1001
+
+        # PersonaId from rune.ini if present, else default
+        persona_id = 1000200030000
+
+        self.sessions[session_token] = {
+            "token": session_token,
+            "user_id": user_id,
+            "persona_id": persona_id,
+            "display_name": "Player",
+            "created_at": time.time(),
+            "last_seen": time.time()
+        }
+
+        log.info("UT /auth -> sid=%s persona=%s", session_token, persona_id)
+
+        return self._make_response({
+            "userAccountInfo": {
+                "userId": user_id,
+                "personaId": persona_id,
+                "displayName": "Player",
+                "permissions": 0,
+                "signOnType": 0,
+                "country": "US",
+                "locale": "en-US",
+                "clans": [],
+                "mutedUsers": [],
+                "isAnonymous": False,
+                "sessionKey": session_token,
+                "personaList": [{
+                    "personaId": persona_id,
+                    "displayName": "Player",
+                    "avatar": 0,
+                    "roles": 0,
+                    "isOnline": True
+                }]
+            },
+            "phishingToken": session_token,
+            "sessionToken": session_token,
+            "serverTime": int(time.time() * 1000),
+            "sid": session_token
+        })
+
+    async def handle_ut_security(self, request):
+        """GET /security - phishing/captcha gate. Return 'clean'."""
+        return self._make_response({
+            "questions": [],
+            "result": {"code": "1"}
+        })
+
+    async def handle_ut_user(self, request):
+        """GET /user - user info for the X-UT-SID session."""
+        session = self._get_session(request)
+        if not session:
+            return self.handle_ut_auth(request)
+        return self._make_response({
+            "user": {
+                "userId": session["user_id"],
+                "personaId": session.get("persona_id", 1000200030000),
+                "displayName": session.get("display_name", "Player")
+            }
+        })
+
+    async def handle_ut_ok(self, request):
+        """GET /keepalive etc."""
+        return self._make_response({"success": True, "serverTime": int(time.time() * 1000)})
+
+    async def handle_ut_status(self, request):
+        return self._make_response({
+            "status": "OK",
+            "maintenancemode": False,
+            "queue": 0,
+            "serverTime": int(time.time() * 1000)
+        })
+
+    # ------------------------------------------------------------------
+    # EASFC POW stubs (paths per powdllzf.dll strings)
+    # ------------------------------------------------------------------
+
+    async def handle_pow_health(self, request):
+        return self._make_response({
+            "systems": [],
+            "status": "UP",
+            "serverTime": int(time.time() * 1000)
+        })
+
+    async def handle_pow_auth(self, request):
+        """POST /auth - POW session (X-POW-SID issued)."""
+        sid = str(uuid.uuid4())
+        persona_id = 1000200030000
+
+        self.sessions[sid] = {
+            "token": sid,
+            "user_id": 1001,
+            "persona_id": persona_id,
+            "display_name": "Player",
+            "created_at": time.time(),
+            "last_seen": time.time()
+        }
+
+        log.info("POW /auth -> sid=%s", sid)
+
+        return self._make_response({
+            "sid": sid,
+            "nucleusPersonaId": persona_id,
+            "nucleusPersonaDisplayName": "Player",
+            "clientVersion": 1,
+            "locale": "en-US",
+            "serverTime": int(time.time() * 1000)
+        })
+
+    async def handle_pow_security(self, request):
+        return self._make_response({"questions": [], "result": {"code": "1"}})
+
+    async def handle_pow_ok(self, request):
+        return self._make_response({})
+
+    async def handle_pow_entitlements(self, request):
+        return self._make_response({"entitlements": []})
+
+    async def handle_pow_friends(self, request):
+        return self._make_response({"friends": []})
+
+    async def handle_pow_bank(self, request):
+        return self._make_response({
+            "account": {"currency": "COINS", "amount": 10000}
+        })
+
+    async def handle_pow_news(self, request):
+        return self._make_response({"news": [], "banners": []})
+
+    # ------------------------------------------------------------------
+    # OSDK EASW + catch-all
+    # ------------------------------------------------------------------
+
+    async def handle_easw_upload(self, request):
+        """POST /xmshd_collector/... - telemetry upload. Accept and discard."""
+        log.info("EASW telemetry upload from %s (%s bytes)",
+                 request.remote, request.content_length)
+        return self._make_response({"success": True})
+
+    async def handle_catchall(self, request):
+        """Anything not matched: already journalled by middleware - reply empty."""
+        log.warning("Catch-all hit: %s %s (query=%s)",
+                    request.method, request.path, request.query_string)
+        return self._make_response({})

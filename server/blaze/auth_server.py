@@ -56,6 +56,7 @@ class BlazeAuthServer:
         self.config = config
         self.db = db
         self.server = None
+        self.tls_server = None
         self.sessions: Dict[int, Session] = {}
         self.session_counter = 1
 
@@ -68,10 +69,45 @@ class BlazeAuthServer:
         log.info("Auth server listening on %s:%s",
                  self.config["host"], self.config["tcp_port"])
 
+        if self.config.get("use_tls"):
+            await self._start_tls_listener()
+
+    async def _start_tls_listener(self):
+        """Optional TLS listener (ssl_port) using a self-signed cert."""
+        import ssl
+        from pathlib import Path
+
+        cert = Path(self.config.get("cert_file", ""))
+        key = Path(self.config.get("key_file", ""))
+
+        if not (cert.is_file() and key.is_file()):
+            log.warning("Auth: TLS requested but cert/key missing at %s / %s - "
+                        "run tools/gen_cert.py first", cert, key)
+            return
+
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        try:
+            ctx.load_cert_chain(str(cert), str(key))
+        except Exception as e:
+            log.error("Auth: failed to load TLS cert: %s", e)
+            return
+
+        self.tls_server = await asyncio.start_server(
+            self._handle_client,
+            self.config["host"],
+            self.config["ssl_port"],
+            ssl=ctx
+        )
+        log.info("Auth server (TLS) listening on %s:%s",
+                 self.config["host"], self.config["ssl_port"])
+
     async def stop(self):
         if self.server:
             self.server.close()
             await self.server.wait_closed()
+        if self.tls_server:
+            self.tls_server.close()
+            await self.tls_server.wait_closed()
 
     async def _handle_client(self, reader, writer):
         peer = writer.get_extra_info("peername")
@@ -94,6 +130,11 @@ class BlazeAuthServer:
                 )
                 payload_len = int.from_bytes(payload_len_bytes, "big")
 
+                if payload_len > 10_000_000:
+                    log.warning("Auth: implausible payload_len=%d from %s - "
+                                "journaling and closing", payload_len, peer)
+                    break
+
                 payload = b""
                 if payload_len > 0:
                     payload = await asyncio.wait_for(
@@ -114,17 +155,22 @@ class BlazeAuthServer:
                 response = await self._dispatch_packet(packet, peer, current_session)
 
                 if response:
+                    sess = getattr(response, "_session", None)
+                    if sess is not None:
+                        current_session = sess
                     writer.write(response.to_bytes())
                     await writer.drain()
                     self._journal_packet(peer, "send", response)
 
-                if hasattr(response, '_close_after_send') and response._close_after_send:
+                if getattr(response, "_close_after_send", False):
                     break
 
         except asyncio.IncompleteReadError:
             log.info("Auth: connection closed by %s", peer)
         except asyncio.TimeoutError:
             log.warning("Auth: timeout from %s", peer)
+        except ConnectionResetError:
+            log.info("Auth: connection reset by %s", peer)
         except Exception as e:
             log.error("Auth: error with %s: %s", peer, e, exc_info=True)
         finally:

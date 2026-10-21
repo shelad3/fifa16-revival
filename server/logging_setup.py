@@ -42,9 +42,11 @@ def setup_logging(config):
         )
         journal_handler.setLevel(logging.DEBUG)
         journal_handler.setFormatter(logging.Formatter("%(message)s"))
-        journal_logger = logging.getLogger("journal.network")
-        journal_logger.addHandler(journal_handler)
-        journal_logger.setLevel(logging.DEBUG)
+        for name in ("journal.network", "journal.http"):
+            journal_logger = logging.getLogger(name)
+            journal_logger.addHandler(journal_handler)
+            journal_logger.setLevel(logging.DEBUG)
+            journal_logger.propagate = False
 
     if config.get("journal_unknown_commands", True):
         unknown_handler = RotatingFileHandler(

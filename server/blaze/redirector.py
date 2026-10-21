@@ -1,18 +1,23 @@
 """
 Blaze Redirector Server
 
-The first server the FIFA 16 client connects to. It redirects the client
-to the main authentication server. Port 42127 is the standard Blaze
-redirector port.
+First server the FIFA 16 client contacts. Speaks TWO protocols on the
+same port (42127), because the real winter15 redirector supports both:
+
+  1. Classic Blaze TCP: 4-byte length prefix + TDF payload
+  2. HTTP: the client's ProtoHttp fallback (X-BLAZE-ERRORCODE flow)
+
+Everything received is journalled byte-for-byte for reverse engineering.
 """
 
 import asyncio
 import logging
 import json
 import time
-from pathlib import Path
 
 log = logging.getLogger("blaze.redirector")
+
+HTTP_PREFIXES = (b"GET ", b"POST ", b"HEAD ", b"PUT ", b"DELETE ", b"OPTIONS ")
 
 
 class BlazeRedirector:
@@ -32,7 +37,7 @@ class BlazeRedirector:
             self.host,
             self.port
         )
-        log.info("Redirector listening on %s:%s", self.host, self.port)
+        log.info("Redirector listening on %s:%s (Blaze TCP + HTTP)", self.host, self.port)
 
     async def stop(self):
         if self.server:
@@ -44,7 +49,7 @@ class BlazeRedirector:
         log.info("Redirector: new connection from %s:%s", peer[0], peer[1])
 
         try:
-            data = await asyncio.wait_for(reader.read(4096), timeout=10.0)
+            data = await asyncio.wait_for(reader.read(8192), timeout=15.0)
 
             if not data:
                 log.warning("Redirector: empty connection from %s", peer)
@@ -53,21 +58,20 @@ class BlazeRedirector:
 
             self._journal_connection(peer, data)
 
-            redirect_host = self.config.get("auth_host", self.host)
-            redirect_port = self.config.get("ssl_port", 42133)
-
-            response = self._build_redirect_response(redirect_host, redirect_port)
+            if data.startswith(HTTP_PREFIXES):
+                response = self._build_http_response(data, peer)
+            else:
+                response = self._build_blaze_response(data, peer)
 
             writer.write(response)
             await writer.drain()
 
-            log.info("Redirector: redirected %s to %s:%s",
-                     peer, redirect_host, redirect_port)
+            log.info("Redirector: replied to %s (%d bytes)", peer, len(response))
 
         except asyncio.TimeoutError:
             log.warning("Redirector: timeout from %s", peer)
         except Exception as e:
-            log.error("Redirector: error handling %s: %s", peer, e)
+            log.error("Redirector: error handling %s: %s", peer, e, exc_info=True)
         finally:
             try:
                 writer.close()
@@ -75,13 +79,23 @@ class BlazeRedirector:
             except Exception:
                 pass
 
-    def _build_redirect_response(self, host: str, port: int) -> bytes:
-        """Build a Blaze redirect response packet."""
+    def _redirect_target(self):
+        host = self.config.get("auth_host", "127.0.0.1")
+        port = self.config.get("tcp_port", 42230)
+        return host, port
+
+    def _build_blaze_response(self, request: bytes, peer) -> bytes:
+        """Classic Blaze redirect: TDF with hostname + port of the auth server."""
         from server.blaze import BlazePacket, TDFEncoder
 
+        host, port = self._redirect_target()
+
         fields = (
-            TDFEncoder.encode_string("HOSN", host) +
-            TDFEncoder.encode_uint32("PORT", port)
+            TDFEncoder.encode_struct("DATA",
+                TDFEncoder.encode_string("HOSN", host) +
+                TDFEncoder.encode_uint32("PORT", port) +
+                TDFEncoder.encode_uint32("TYPE", 0)
+            )
         )
 
         packet = BlazePacket(
@@ -93,7 +107,33 @@ class BlazeRedirector:
             payload=fields
         )
 
-        return packet.to_bytes()
+        payload = packet.to_bytes()
+        return len(payload).to_bytes(4, "big") + payload
+
+    def _build_http_response(self, request: bytes, peer) -> bytes:
+        """HTTP fallback response - XML server list (best guess, journaled)."""
+        host, port = self._redirect_target()
+
+        first_line = request.split(b"\r\n", 1)[0].decode("ascii", "replace")
+        log.info("Redirector: HTTP request from %s: %s", peer, first_line)
+
+        body = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<servers>\n"
+            f"  <server><hostname>{host}</hostname><port>{port}</port>"
+            "<type>0</type><status>1</status></server>\n"
+            "</servers>\n"
+        ).encode("utf-8")
+
+        headers = (
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/xml\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+        ).encode("ascii")
+
+        return headers + body
 
     def _journal_connection(self, peer, data):
         journal_logger = logging.getLogger("journal.network")
@@ -102,7 +142,8 @@ class BlazeRedirector:
             "source": "redirector",
             "peer": f"{peer[0]}:{peer[1]}",
             "direction": "recv",
-            "data_hex": data.hex(),
-            "data_len": len(data)
+            "data_hex": data[:4096].hex(),
+            "data_len": len(data),
+            "ascii_preview": data[:200].decode("ascii", "replace")
         }
         journal_logger.debug(json.dumps(entry))
